@@ -17,9 +17,13 @@ jobs:
         with:
           fetch-depth: 0 # the build number is the commit count
 
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
+      # Picked with a shell step rather than a third-party action, so no outside code runs
+      # in a job that holds the signing certificate and notarization secrets.
+      - name: Select the newest stable Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
 
       - name: Import the Developer ID certificate
         env:
