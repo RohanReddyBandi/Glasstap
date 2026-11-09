@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Opens Glasstap's few windows. It's a menu bar app with no Dock icon, so windows are
-/// managed directly instead of through SwiftUI window scenes, which don't come forward
-/// reliably in that setup.
+/// Opens Glasstap's windows. It's a menu bar app with no Dock icon, so windows are managed
+/// directly instead of through SwiftUI window scenes, which don't come forward reliably in
+/// that setup.
 @MainActor
 final class WindowManager: NSObject, NSWindowDelegate {
     private weak var model: AppModel?
@@ -13,13 +13,22 @@ final class WindowManager: NSObject, NSWindowDelegate {
         self.model = model
     }
 
-    func showOnboarding() {
+    func showSetup(step: SetupView.Step = .welcome) {
         guard let model else { return }
-        show(id: "onboarding", title: "Welcome to Glasstap") { OnboardingView(model: model) }
+        // Reopening at a specific step rebuilds the window so it starts there.
+        if step != .welcome, let existing = windows["setup"] {
+            existing.close()
+        }
+        show(id: "setup", title: "Glasstap Setup") { SetupView(model: model, initialStep: step) }
     }
 
-    func closeOnboarding() {
-        windows["onboarding"]?.close()
+    func closeSetup() {
+        windows["setup"]?.close()
+    }
+
+    func showSettings() {
+        guard let model else { return }
+        show(id: "settings", title: "Glasstap Settings") { SettingsView(model: model) }
     }
 
     func showDebug() {
@@ -64,8 +73,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
         window.orderFrontRegardless()
     }
 
-    /// Windows are rebuilt each time they open. That way the debug window's camera preview
-    /// stops drawing when it's closed instead of running hidden.
+    /// Windows are rebuilt each time they open, so camera previews stop drawing when their
+    /// window closes instead of running hidden.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, let id = window.identifier?.rawValue else { return }
         windows[id] = nil

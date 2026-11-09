@@ -23,7 +23,7 @@ struct DebugView: View {
     }
 
     @ViewBuilder private var camera: some View {
-        if model.isActive {
+        if model.isCameraRunning {
             CameraDebugView(session: model.tracker.session, frame: model.debug.latestFrame)
                 .aspectRatio(model.tracker.aspectRatio, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -40,7 +40,7 @@ struct DebugView: View {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6))
                 VStack(spacing: 10) {
                     Image(systemName: "video.slash").font(.system(size: 28)).foregroundStyle(.secondary)
-                    Text("Touch mode is off, so the camera and mic are off too.")
+                    Text("Touch mode is off, so the camera is off too.")
                         .foregroundStyle(.secondary)
                     Button("Turn On Touch Mode") { model.toggle() }
                 }
@@ -50,17 +50,22 @@ struct DebugView: View {
     }
 
     private var stats: some View {
-        HStack(spacing: 24) {
-            stat("Camera", model.isActive ? String(format: "%.0f fps", model.debug.cameraFPS) : "–")
-            stat("Hand model", model.isActive ? String(format: "%.0f ms/frame", model.debug.visionMilliseconds) : "–")
-            stat("Hands", model.isActive ? "\(model.debug.latestFrame?.hands.count ?? 0)" : "–")
-            stat("Cursor", pointerText)
+        let hand = model.debug.latestUpdate?.primary
+        let on = model.isCameraRunning
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 24) {
+                stat("Camera", on ? String(format: "%.0f fps", model.debug.cameraFPS) : "–")
+                stat("Hand model", on ? String(format: "%.0f ms/frame", model.debug.visionMilliseconds) : "–")
+                stat("Hands", on ? "\(model.debug.latestFrame?.hands.count ?? 0)" : "–")
+                stat("Gesture", model.isActive ? model.debug.gestureState : "–")
+            }
+            HStack(spacing: 24) {
+                stat("Cursor", hand.map { String(format: "%.0f%% across, %.0f%% up", $0.sample.screen.x * 100, $0.sample.screen.y * 100) } ?? "–")
+                stat("Pinch gap", hand?.metrics.indexPinch.map { String(format: "%.2f", $0) } ?? "–")
+                stat("Fingers out", hand.map { "\($0.metrics.extendedFingers)" } ?? "–")
+                stat("Calibration", model.settings.calibration?.quality.rawValue ?? "None")
+            }
         }
-    }
-
-    private var pointerText: String {
-        guard model.isActive, let pointer = model.debug.latestPointer else { return "–" }
-        return String(format: "%.0f%% across, %.0f%% up", pointer.screen.x * 100, pointer.screen.y * 100)
     }
 
     private func stat(_ label: String, _ value: String) -> some View {
@@ -75,12 +80,12 @@ struct DebugView: View {
             HStack {
                 Text("Microphone").font(.headline)
                 Spacer()
-                Text(model.isActive ? model.listener.deviceName : "Off")
+                Text(model.listener.isRunning ? model.listener.deviceName : "Off (tap-to-click is off)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             TimelineView(.periodic(from: .now, by: 1.0 / 20.0)) { _ in
-                LevelMeter(levels: model.listener.levels, threshold: threshold, active: model.isActive)
+                LevelMeter(levels: model.listener.levels, threshold: threshold, active: model.listener.isRunning)
             }
             .frame(height: 22)
             HStack {
@@ -96,7 +101,7 @@ struct DebugView: View {
         }
         .onChange(of: threshold) { _, newValue in
             model.settings.tapThresholdDB = newValue
-            model.settingsChanged()
+            model.applySettings()
         }
     }
 
@@ -145,7 +150,7 @@ private extension DebugStore.Entry.Kind {
 }
 
 /// Camera preview with the detected hand joints drawn over it, mirrored so it reads like a
-/// mirror. The index fingertip (the cursor's source) is the larger dot.
+/// mirror. The ring between the knuckles is what the cursor follows; the yellow line is the pinch.
 struct CameraDebugView: View {
     let session: AVCaptureSession
     let frame: HandFrame?
@@ -164,11 +169,25 @@ struct CameraDebugView: View {
                     }
                     context.stroke(bones, with: .color(.white.opacity(0.8)), lineWidth: 2)
                     for (joint, point) in hand.joints {
-                        let isTip = joint == .indexTip
-                        let r: CGFloat = isTip ? 7 : 3.5
+                        let isTip = joint == .thumbTip || joint == .indexTip
+                        let r: CGFloat = isTip ? 5 : 3.5
                         let c = Self.viewPoint(point, in: size)
                         let dot = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2))
-                        context.fill(dot, with: .color(isTip ? .accentColor : .white))
+                        context.fill(dot, with: .color(isTip ? .yellow : .white))
+                    }
+                    // The pinch: thumb tip to index tip.
+                    if let thumb = hand.joints[.thumbTip], let index = hand.joints[.indexTip] {
+                        var pinch = Path()
+                        pinch.move(to: Self.viewPoint(thumb, in: size))
+                        pinch.addLine(to: Self.viewPoint(index, in: size))
+                        context.stroke(pinch, with: .color(.yellow), style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                    }
+                    // The cursor anchor: between the index and middle knuckles.
+                    if let anchor = hand.anchor {
+                        let c = Self.viewPoint(anchor, in: size)
+                        let r: CGFloat = 8
+                        context.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
+                                       with: .color(.accentColor), lineWidth: 3)
                     }
                 }
             }

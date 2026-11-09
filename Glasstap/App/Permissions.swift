@@ -4,6 +4,9 @@ import AVFoundation
 import Observation
 
 /// Camera, microphone and Accessibility status, plus ways to ask for each.
+///
+/// Camera and Accessibility are required. The microphone is only needed for the optional
+/// tap-the-glass mode.
 @MainActor
 @Observable
 final class Permissions {
@@ -22,8 +25,9 @@ final class Permissions {
     private(set) var accessibility = false
     @ObservationIgnored private var didPromptAccessibility = false
 
-    var allGranted: Bool {
-        camera == .granted && microphone == .granted && accessibility
+    /// Everything touch mode needs, given whether tap-to-click is on.
+    func allGranted(needsMicrophone: Bool) -> Bool {
+        camera == .granted && accessibility && (!needsMicrophone || microphone == .granted)
     }
 
     func refresh() {
@@ -32,11 +36,11 @@ final class Permissions {
         accessibility = AXIsProcessTrusted()
     }
 
-    /// Shows the system camera/mic prompts for anything not yet asked.
-    func requestMediaAccessIfNeeded() async {
+    /// Shows the system camera prompt (and the mic prompt, if needed) for anything not yet asked.
+    func requestMediaAccessIfNeeded(includingMicrophone: Bool) async {
         refresh()
         if camera == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .video) }
-        if microphone == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .audio) }
+        if includingMicrophone, microphone == .notDetermined { _ = await AVCaptureDevice.requestAccess(for: .audio) }
         refresh()
     }
 
@@ -61,7 +65,7 @@ final class Permissions {
     /// The first time, shows the system's Accessibility prompt (which also adds Glasstap to
     /// the list in System Settings). After that, opens the settings pane directly.
     func requestAccessibility() {
-        if didPromptAccessibility {
+        if didPromptAccessibility || AXIsProcessTrusted() {
             Self.open(.accessibility)
         } else {
             didPromptAccessibility = true

@@ -30,10 +30,15 @@ struct HandPose: Sendable, Equatable {
     var joints: [HandJoint: CGPoint]
     var confidence: Float
 
-    /// The point that drives the cursor: the index fingertip, or the next joint down the
-    /// index finger when the tip isn't visible.
-    var pointer: CGPoint? {
-        joints[.indexTip] ?? joints[.indexDIP] ?? joints[.indexPIP] ?? joints[.indexMCP]
+    /// The point that drives the cursor: midway between the index and middle knuckles.
+    /// Knuckles barely move when the fingers pinch, so the cursor holds still while you click.
+    var anchor: CGPoint? {
+        switch (joints[.indexMCP], joints[.middleMCP]) {
+        case let (a?, b?): CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        case let (a?, nil): a
+        case let (nil, b?): b
+        case (nil, nil): nil
+        }
     }
 }
 
@@ -44,6 +49,9 @@ struct HandFrame: Sendable, Equatable {
     var hands: [HandPose]
     /// How long hand detection took for this frame.
     var visionMilliseconds: Double
+    /// Width / height of the camera image, needed to measure distances between joints
+    /// (Vision normalizes x and y by different lengths).
+    var aspectRatio: CGFloat = 4.0 / 3.0
 }
 
 extension CGPoint {

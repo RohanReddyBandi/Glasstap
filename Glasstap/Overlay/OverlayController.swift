@@ -3,11 +3,16 @@ import SwiftUI
 
 /// A transparent, click-through window over the whole built-in display. It shows:
 /// - a glowing border while touch mode is on (the "it's active" indicator),
-/// - the translucent cursor dot where Glasstap thinks you're pointing,
-/// - a ripple on every click it makes,
-/// - a short toast when touch mode turns on or off.
+/// - the cursor ring, which closes in as your fingers pinch and changes shape for drags and
+///   scrolls,
+/// - a ripple on every click,
+/// - short toasts for touch mode on/off, swipes and zoom.
 @MainActor
 final class OverlayController {
+    enum PulseStyle {
+        case primary, secondary
+    }
+
     var showsCursor = true {
         didSet { view.showsCursor = showsCursor }
     }
@@ -37,14 +42,13 @@ final class OverlayController {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// `point` is normalized on the display (origin bottom-left); nil hides the dot.
-    /// `stale` dims it: the hand has left the camera's view but a tap would still use this spot.
-    func updatePointer(_ point: CGPoint?, stale: Bool) {
-        view.updatePointer(point, stale: stale)
+    /// Nil hides the ring. `stale` dims it: the hand has left the camera's view.
+    func updateCursor(_ feedback: CursorFeedback?, stale: Bool) {
+        view.updateCursor(feedback, stale: stale)
     }
 
-    func pulse(at point: CGPoint) {
-        view.pulse(at: point)
+    func pulse(at point: CGPoint, style: PulseStyle) {
+        view.pulse(at: point, color: style == .primary ? .controlAccentColor : .systemOrange)
     }
 
     func toast(_ text: String, symbol: String) {
@@ -75,20 +79,19 @@ final class OverlayWindow: NSWindow {
 
 final class OverlayView: NSView {
     var showsCursor = true {
-        didSet { if !showsCursor { setDotVisible(false) } }
+        didSet { if !showsCursor { setRingVisible(false) } }
     }
     var topInset: CGFloat = 32 {
         didSet { needsLayout = true }
     }
 
     private let border = CAShapeLayer()
-    private let dot = CALayer()
-    private let dotCenter = CALayer()
-    private let toastHost = NSHostingView(rootView: ToastView(text: "", symbol: "hand.tap.fill"))
-    private var dotVisible = false
+    private let ring = CALayer()
+    private let ringCenter = CALayer()
+    private let toastHost = NSHostingView(rootView: ToastView(text: "", symbol: "hand.pinch.fill"))
+    private var ringVisible = false
     private var toastWork: DispatchWorkItem?
 
-    private static let dotSize: CGFloat = 30
     private static let cornerRadius: CGFloat = 12
 
     override init(frame: NSRect) {
@@ -117,51 +120,91 @@ final class OverlayView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2
-        [border, dot, dotCenter].forEach { $0.contentsScale = scale }
+        [border, ring, ringCenter].forEach { $0.contentsScale = scale }
     }
 
     func setActive(_ active: Bool) {
         border.opacity = active ? 1 : 0
-        if !active { setDotVisible(false) }
+        if !active { setRingVisible(false) }
     }
 
-    func updatePointer(_ point: CGPoint?, stale: Bool) {
-        guard showsCursor, let point else {
-            setDotVisible(false)
+    func updateCursor(_ feedback: CursorFeedback?, stale: Bool) {
+        guard showsCursor, let feedback else {
+            setRingVisible(false)
             return
         }
-        let target = CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
+        let accent = NSColor.controlAccentColor
+        let progress = CGFloat(feedback.pinchProgress)
+
+        // Hovering: the ring closes in as the fingers come together, like a button being
+        // pressed. The other states change its shape so you can tell what a pinch is doing.
+        var size = CGSize(width: 34 - 18 * progress, height: 34 - 18 * progress)
+        var fill = NSColor.white.withAlphaComponent(0.14 + 0.3 * progress)
+        var stroke = NSColor.white.withAlphaComponent(0.92)
+        var showCenter = true
+        switch feedback.state {
+        case .hover:
+            break
+        case .pressed:
+            size = CGSize(width: 16, height: 16)
+            fill = accent.withAlphaComponent(0.9)
+            showCenter = false
+        case .dragging:
+            size = CGSize(width: 24, height: 24)
+            fill = accent.withAlphaComponent(0.9)
+            showCenter = false
+        case .scrolling:
+            size = CGSize(width: 20, height: 40)
+            fill = accent.withAlphaComponent(0.55)
+            showCenter = false
+        case .zooming:
+            size = CGSize(width: 34, height: 34)
+            fill = .clear
+            stroke = accent
+        }
+
+        let target = CGPoint(x: feedback.position.x * bounds.width, y: feedback.position.y * bounds.height)
         CATransaction.begin()
-        if dotVisible {
+        if ringVisible {
             // The camera runs at 30 fps but the display refreshes at up to 120 Hz. Animating
-            // each step over one camera frame keeps the dot gliding instead of stepping.
+            // each step over one camera frame keeps the ring gliding instead of stepping.
             CATransaction.setAnimationDuration(1.0 / 30.0)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
         } else {
             CATransaction.setDisableActions(true)
         }
-        dot.position = target
+        ring.position = target
         CATransaction.commit()
-        dot.opacity = stale ? 0.4 : 1
-        dotVisible = true
+
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.09)
+        ring.bounds = CGRect(origin: .zero, size: size)
+        ring.cornerRadius = min(size.width, size.height) / 2
+        ring.backgroundColor = fill.cgColor
+        ring.borderColor = stroke.cgColor
+        ringCenter.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        ringCenter.opacity = showCenter ? 1 : 0
+        ring.opacity = stale ? 0.4 : 1
+        CATransaction.commit()
+        ringVisible = true
     }
 
-    func pulse(at point: CGPoint) {
+    func pulse(at point: CGPoint, color: NSColor) {
         guard let root = layer else { return }
         let radius: CGFloat = 18
-        let ring = CAShapeLayer()
-        ring.path = CGPath(ellipseIn: CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2), transform: nil)
-        ring.position = CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
-        ring.fillColor = NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor
-        ring.strokeColor = NSColor.controlAccentColor.cgColor
-        ring.lineWidth = 2
-        ring.contentsScale = window?.backingScaleFactor ?? 2
-        ring.opacity = 0
-        root.addSublayer(ring)
+        let ripple = CAShapeLayer()
+        ripple.path = CGPath(ellipseIn: CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2), transform: nil)
+        ripple.position = CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
+        ripple.fillColor = color.withAlphaComponent(0.25).cgColor
+        ripple.strokeColor = color.cgColor
+        ripple.lineWidth = 2
+        ripple.contentsScale = window?.backingScaleFactor ?? 2
+        ripple.opacity = 0
+        root.addSublayer(ripple)
 
         let grow = CABasicAnimation(keyPath: "transform.scale")
         grow.fromValue = 0.5
-        grow.toValue = 2.0
+        grow.toValue = 2.2
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 1
         fade.toValue = 0
@@ -171,8 +214,8 @@ final class OverlayView: NSView {
         group.timingFunction = CAMediaTimingFunction(name: .easeOut)
 
         CATransaction.begin()
-        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
-        ring.add(group, forKey: "pulse")
+        CATransaction.setCompletionBlock { ripple.removeFromSuperlayer() }
+        ripple.add(group, forKey: "pulse")
         CATransaction.commit()
     }
 
@@ -208,30 +251,27 @@ final class OverlayView: NSView {
         border.opacity = 0
         root.addSublayer(border)
 
-        let size = Self.dotSize
-        dot.bounds = CGRect(x: 0, y: 0, width: size, height: size)
-        dot.cornerRadius = size / 2
-        dot.backgroundColor = NSColor.white.withAlphaComponent(0.22).cgColor
-        dot.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
-        dot.borderWidth = 1.5
-        dot.shadowColor = NSColor.black.cgColor
-        dot.shadowOpacity = 0.35
-        dot.shadowRadius = 4
-        dot.shadowOffset = .zero
-        dot.opacity = 0
+        ring.bounds = CGRect(x: 0, y: 0, width: 34, height: 34)
+        ring.cornerRadius = 17
+        ring.borderWidth = 2
+        ring.shadowColor = NSColor.black.cgColor
+        ring.shadowOpacity = 0.35
+        ring.shadowRadius = 4
+        ring.shadowOffset = .zero
+        ring.opacity = 0
 
-        dotCenter.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
-        dotCenter.cornerRadius = 3
-        dotCenter.backgroundColor = accent.cgColor
-        dotCenter.position = CGPoint(x: size / 2, y: size / 2)
-        dot.addSublayer(dotCenter)
-        root.addSublayer(dot)
+        ringCenter.bounds = CGRect(x: 0, y: 0, width: 6, height: 6)
+        ringCenter.cornerRadius = 3
+        ringCenter.backgroundColor = accent.cgColor
+        ringCenter.position = CGPoint(x: 17, y: 17)
+        ring.addSublayer(ringCenter)
+        root.addSublayer(ring)
     }
 
-    private func setDotVisible(_ visible: Bool) {
-        guard visible != dotVisible else { return }
-        dotVisible = visible
-        dot.opacity = visible ? 1 : 0
+    private func setRingVisible(_ visible: Bool) {
+        guard visible != ringVisible else { return }
+        ringVisible = visible
+        ring.opacity = visible ? 1 : 0
     }
 
     private func layoutToast() {

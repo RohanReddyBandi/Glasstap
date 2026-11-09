@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model.deactivate(announce: false)
+        model.calibration.cancel()
     }
 }
 
@@ -31,7 +32,7 @@ struct MenuBarLabel: View {
     let model: AppModel
 
     var body: some View {
-        Image(systemName: model.isActive ? "hand.tap.fill" : "hand.tap")
+        Image(systemName: model.isActive ? "hand.pinch.fill" : "hand.pinch")
             .accessibilityLabel(model.isActive ? "Glasstap, touch mode on" : "Glasstap")
     }
 }
@@ -44,15 +45,22 @@ struct MenuBarMenu: View {
             model.toggle()
         }
         Text("Shortcut: \(model.settings.toggleHotKey.displayString)")
+        if model.settings.calibration == nil {
+            Text("Not calibrated yet")
+        }
 
         Divider()
 
-        Toggle("Show Cursor Dot", isOn: Binding(
-            get: { model.settings.showCursor },
-            set: { model.settings.showCursor = $0; model.settingsChanged() }
-        ))
-        Button("Camera & Mic Debug…") { model.windows.showDebug() }
-        Button("Permissions…") { model.windows.showOnboarding() }
+        Button(model.settings.calibration == nil ? "Calibrate…" : "Recalibrate…") {
+            model.calibration.begin()
+        }
+        Button("Settings…") { model.windows.showSettings() }
+            .keyboardShortcut(",")
+        Button("Setup Assistant…") { model.windows.showSetup() }
+        Button("Debug View…") { model.windows.showDebug() }
+        Button("Check for Updates…") {
+            Task { await model.updates.check(userInitiated: true, settings: model.settings) }
+        }
 
         Divider()
 

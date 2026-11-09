@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Live numbers and an event log for the debug window.
+/// Live numbers and an event log for the debug window and the setup preview.
 @MainActor
 @Observable
 final class DebugStore {
@@ -17,11 +17,15 @@ final class DebugStore {
     }
 
     private(set) var latestFrame: HandFrame?
-    var latestPointer: PointerSample?
+    var latestUpdate: TrackingUpdate?
+    var gestureState = "–"
     private(set) var cameraFPS: Double = 0
     private(set) var visionMilliseconds: Double = 0
     private(set) var entries: [Entry] = []
     @ObservationIgnored private var lastFrameTime: Double?
+
+    /// Whether a hand is in view right now.
+    var handVisible: Bool { latestUpdate?.primary != nil }
 
     func record(_ frame: HandFrame) {
         if let last = lastFrameTime, frame.time > last {

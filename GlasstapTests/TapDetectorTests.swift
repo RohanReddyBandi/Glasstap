@@ -15,8 +15,16 @@ final class TapDetectorTests: XCTestCase {
 
     func testIgnoresTapBelowThreshold() {
         var signal = Signal(rate: rate, seconds: 1, noise: 0.001)
-        signal.addTap(at: 0.5, amplitude: 0.004)  // ≈ -48 dBFS, threshold is -42
-        XCTAssertTrue(run(signal.samples).taps.isEmpty)
+        signal.addTap(at: 0.5, amplitude: 0.004)  // ≈ -48 dBFS
+        var parameters = TapDetector.Parameters()
+        parameters.minPeakDB = -42
+        XCTAssertTrue(run(signal.samples, parameters: parameters).taps.isEmpty)
+    }
+
+    func testDefaultThresholdHearsGentleTap() {
+        var signal = Signal(rate: rate, seconds: 1, noise: 0.0005)
+        signal.addTap(at: 0.5, amplitude: 0.006)  // ≈ -44 dBFS: a soft fingertip
+        XCTAssertEqual(run(signal.samples).taps.count, 1)
     }
 
     func testRaisingThresholdHidesTap() {

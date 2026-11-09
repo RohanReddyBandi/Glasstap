@@ -15,13 +15,14 @@ import Foundation
 struct TapDetector {
     struct Parameters: Equatable, Sendable {
         /// Quietest tap that counts, as the peak level in dBFS. The sensitivity setting moves this.
-        var minPeakDB: Float = -42
+        var minPeakDB: Float = -50
         /// How far above the running noise floor the onset must be.
-        var minRiseDB: Float = 15
-        /// How much the level must jump over ~2.7 ms. This separates clicks from swells.
-        var minAttackDB: Float = 10
+        var minRiseDB: Float = 12
+        /// How far the level must jump above the average of the previous ~10 ms. Separates
+        /// clicks from swells, and from the cycle-to-cycle wobble of a hum or a voice.
+        var minAttackDB: Float = 8
         /// How far the level must have fallen by the end of `decayWindow`.
-        var minDecayDB: Float = 12
+        var minDecayDB: Float = 10
         /// How long after the onset the decay is checked.
         var decayWindow: Double = 0.030
         /// Dead time after a tap, so one tap's ringing can't count twice.
@@ -52,8 +53,10 @@ struct TapDetector {
     private var energySum: Float = 0
     private var blockPeak: Float = 0
     private var blockFill = 0
-    /// Energies of the previous two blocks.
-    private var previousEnergies: (older: Float, newer: Float) = (0, 0)
+    /// Energies of the previous eight blocks (~10 ms), as a ring. A SIMD vector because it
+    /// lives inline: no heap, safe on the audio thread.
+    private var recentEnergies = SIMD8<Float>(repeating: 1e-12)
+    private var recentIndex = 0
     private var floorEnergy: Float = 0
     private var hasFloor = false
     private var state = State.idle
@@ -110,7 +113,10 @@ struct TapDetector {
 
     private mutating func processBlock(energy rawEnergy: Float, peak: Float, start time: Double) -> Outcome? {
         let energy = max(rawEnergy, 1e-12)
-        defer { previousEnergies = (previousEnergies.newer, energy) }
+        defer {
+            recentEnergies[recentIndex] = energy
+            recentIndex = (recentIndex + 1) % 8
+        }
 
         guard hasFloor else {
             floorEnergy = energy
@@ -160,7 +166,7 @@ struct TapDetector {
         case .idle:
             let level = Self.decibels(energy: energy)
             let rise = level - Self.decibels(energy: floorEnergy)
-            let attack = level - Self.decibels(energy: previousEnergies.older)
+            let attack = level - Self.decibels(energy: recentEnergies.sum() / 8)
             if rise >= parameters.minRiseDB, attack >= parameters.minAttackDB {
                 state = .candidate(Candidate(
                     onset: time, peakEnergy: energy, peakAmplitude: peak, riseDB: rise, attackDB: attack

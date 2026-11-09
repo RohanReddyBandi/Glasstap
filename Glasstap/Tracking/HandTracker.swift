@@ -145,7 +145,8 @@ extension HandTracker: AVCaptureVideoDataOutputSampleBufferDelegate {
         let frame = HandFrame(
             time: captureTime,
             hands: hands,
-            visionMilliseconds: (CACurrentMediaTime() - started) * 1000
+            visionMilliseconds: (CACurrentMediaTime() - started) * 1000,
+            aspectRatio: aspectRatio
         )
         DispatchQueue.main.async { [weak self] in self?.onFrame?(frame) }
     }

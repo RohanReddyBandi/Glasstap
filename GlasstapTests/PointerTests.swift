@@ -50,13 +50,18 @@ final class OneEuroFilterTests: XCTestCase {
 
 final class PointerTrackerTests: XCTestCase {
     func testMappingMirrorsCamera() {
-        let mapping = PointerMapping()
+        let mapping = PointerMapping.uncalibrated
         // Your right hand shows up on the left of the unmirrored image, and should drive the
         // right side of the screen.
-        XCTAssertGreaterThan(mapping.screenPoint(forCamera: CGPoint(x: 0.2, y: 0.3)).x, 0.9)
-        XCTAssertLessThan(mapping.screenPoint(forCamera: CGPoint(x: 0.8, y: 0.3)).x, 0.1)
-        let clamped = mapping.screenPoint(forCamera: CGPoint(x: -1, y: 2))
-        XCTAssertEqual(clamped, CGPoint(x: 1, y: 1))
+        XCTAssertGreaterThan(mapping.screenPoint(forCamera: CGPoint(x: 0.22, y: 0.4)).x, 0.9)
+        XCTAssertLessThan(mapping.screenPoint(forCamera: CGPoint(x: 0.78, y: 0.4)).x, 0.1)
+    }
+
+    func testCursorIsClampedButMotionIsNot() {
+        var tracker = PointerTracker()
+        let update = tracker.ingest(frame(at: 0, x: 0.05))
+        XCTAssertEqual(update.primary?.sample.screen.x, 1)
+        XCTAssertGreaterThan(update.primary?.sample.motion.x ?? 0, 1)
     }
 
     func testTapUsesLatestFrameBeforeTheSound() {
@@ -80,29 +85,34 @@ final class PointerTrackerTests: XCTestCase {
 
     func testFramesWithoutHandsDontCount() {
         var tracker = PointerTracker()
-        XCTAssertNil(tracker.ingest(HandFrame(time: 0, hands: [], visionMilliseconds: 5)))
+        XCTAssertNil(tracker.ingest(HandFrame(time: 0, hands: [], visionMilliseconds: 5)).primary)
         XCTAssertNil(tracker.latest)
     }
 
-    func testFollowsSameHandWhenSecondHandAppears() {
+    func testCursorStaysWithSameHandWhenSecondHandAppears() {
         var tracker = PointerTracker()
         tracker.ingest(frame(at: 0, x: 0.30))
-        let other = HandPose(joints: [.indexTip: CGPoint(x: 0.8, y: 0.3)], confidence: 0.99)
-        let same = HandPose(joints: [.indexTip: CGPoint(x: 0.31, y: 0.3)], confidence: 0.5)
-        let sample = tracker.ingest(HandFrame(time: 0.033, hands: [other, same], visionMilliseconds: 5))
-        XCTAssertEqual(sample?.camera.x ?? 0, 0.31, accuracy: 1e-9)
+        let update = tracker.ingest(HandFrame(time: 0.033, hands: [hand(x: 0.7, size: 0.2), hand(x: 0.31)], visionMilliseconds: 5))
+        XCTAssertEqual(update.primary?.metrics.anchor.x ?? 0, 0.31, accuracy: 1e-9)
+        XCTAssertEqual(update.secondary?.metrics.anchor.x ?? 0, 0.7, accuracy: 1e-9)
     }
 
-    func testFallsBackToLowerIndexJointWhenTipHidden() {
-        let hand = HandPose(joints: [.indexPIP: CGPoint(x: 0.4, y: 0.2), .wrist: .zero], confidence: 0.9)
-        XCTAssertEqual(hand.pointer, CGPoint(x: 0.4, y: 0.2))
+    func testCalibratedMappingIsUsed() {
+        var tracker = PointerTracker()
+        tracker.mapping = .calibrated(Homography(m: [0, 0, 0.25, 0, 0, 0.75, 0, 0, 1]))
+        let update = tracker.ingest(frame(at: 0, x: 0.5))
+        XCTAssertEqual(update.primary?.sample.screen, CGPoint(x: 0.25, y: 0.75))
+    }
+
+    private func hand(x: CGFloat, size: CGFloat = 0.12) -> HandPose {
+        HandPose(joints: [
+            .indexMCP: CGPoint(x: x - 0.01, y: 0.4),
+            .middleMCP: CGPoint(x: x + 0.01, y: 0.4),
+            .wrist: CGPoint(x: x, y: 0.4 - size),
+        ], confidence: 0.9)
     }
 
     private func frame(at time: Double, x: CGFloat) -> HandFrame {
-        HandFrame(
-            time: time,
-            hands: [HandPose(joints: [.indexTip: CGPoint(x: x, y: 0.3)], confidence: 0.9)],
-            visionMilliseconds: 5
-        )
+        HandFrame(time: time, hands: [hand(x: x)], visionMilliseconds: 5)
     }
 }
