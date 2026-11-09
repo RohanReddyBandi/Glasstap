@@ -6,7 +6,14 @@ final class CalibrationTests: XCTestCase {
     private let truth = Homography(m: [-1.9, 0.12, 1.25, 0.08, 1.7, -0.3, 0.15, -0.2, 1])
 
     func testHomographyRecoversKnownTransform() throws {
-        let source = (0..<12).map { i in CGPoint(x: 0.2 + Double(i % 4) * 0.15, y: 0.2 + Double(i / 4) * 0.2) }
+        var source: [CGPoint] = []
+        for row in 0..<3 {
+            for column in 0..<4 {
+                let x: CGFloat = 0.2 + 0.15 * CGFloat(column)
+                let y: CGFloat = 0.2 + 0.2 * CGFloat(row)
+                source.append(CGPoint(x: x, y: y))
+            }
+        }
         let target = source.map(truth.apply)
         let fitted = try XCTUnwrap(Homography.fit(from: source, to: target))
         for probe in [CGPoint(x: 0.33, y: 0.41), CGPoint(x: 0.61, y: 0.27)] {

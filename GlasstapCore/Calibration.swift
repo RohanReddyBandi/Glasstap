@@ -66,9 +66,17 @@ struct Homography: Codable, Equatable, Sendable {
     /// mean distance is √2. Keeps the equations well conditioned.
     private static func normalization(for points: [CGPoint]) -> ([Double], [Double])? {
         let n = Double(points.count)
-        let cx = points.reduce(0) { $0 + Double($1.x) } / n
-        let cy = points.reduce(0) { $0 + Double($1.y) } / n
-        let meanDistance = points.reduce(0) { $0 + hypot(Double($1.x) - cx, Double($1.y) - cy) } / n
+        var sumX = 0.0, sumY = 0.0
+        for point in points {
+            sumX += Double(point.x)
+            sumY += Double(point.y)
+        }
+        let cx = sumX / n, cy = sumY / n
+        var sumDistance = 0.0
+        for point in points {
+            sumDistance += hypot(Double(point.x) - cx, Double(point.y) - cy)
+        }
+        let meanDistance = sumDistance / n
         guard meanDistance > 1e-9 else { return nil }
         let k = 2.0.squareRoot() / meanDistance
         return ([k, 0, -k * cx, 0, k, -k * cy, 0, 0, 1], [1 / k, 0, cx, 0, 1 / k, cy, 0, 0, 1])
@@ -83,7 +91,11 @@ struct Homography: Codable, Equatable, Sendable {
         var out = [Double](repeating: 0, count: 9)
         for r in 0..<3 {
             for c in 0..<3 {
-                out[r * 3 + c] = (0..<3).reduce(0) { $0 + a[r * 3 + $1] * b[$1 * 3 + c] }
+                var sum = 0.0
+                for k in 0..<3 {
+                    sum += a[r * 3 + k] * b[k * 3 + c]
+                }
+                out[r * 3 + c] = sum
             }
         }
         return out
