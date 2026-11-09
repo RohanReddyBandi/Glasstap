@@ -34,6 +34,9 @@ final class AppModel {
     @ObservationIgnored let windows = WindowManager()
     @ObservationIgnored private let overlay = OverlayController()
     @ObservationIgnored private let input = InputSynthesizer()
+    @ObservationIgnored private let glide = PointerGlide()
+    /// Sees every processed camera frame while the camera runs (the setup practice step uses it).
+    @ObservationIgnored var frameObserver: ((HandFrame, TrackingUpdate) -> Void)?
     @ObservationIgnored private let scroller = ScrollAnimator()
     @ObservationIgnored private let activity = InputActivityMonitor()
     @ObservationIgnored private var pointer = PointerTracker()
@@ -50,6 +53,7 @@ final class AppModel {
         tracker.onFrame = { [weak self] frame in self?.handle(frame) }
         listener.onOutcome = { [weak self] outcome in self?.handle(outcome) }
         scroller.post = { [weak self] dx, dy in self?.input.scroll(dx: dx, dy: dy) }
+        glide.post = { [weak self] point in self?.input.movePointer(to: point) }
         activity.ownPointerPost = { [weak self] in self?.input.lastPointerPost ?? -.infinity }
         applySettings()
     }
@@ -123,13 +127,14 @@ final class AppModel {
         }
 
         gestures.screenSize = screen.frame.size
+        pointer.screenAspect = screen.frame.width / screen.frame.height
         _ = gestures.reset()
         lastClick = nil
         activity.start()
         overlay.showsCursor = settings.showCursor
         overlay.show(on: screen)
         isActive = true
-        if settings.calibration == nil {
+        if settings.pointerMode == .touchscreen, settings.calibration == nil {
             overlay.toast("Touch mode on. Calibrate for better aim.", symbol: "scope")
         } else {
             overlay.toast("Touch mode on", symbol: "hand.pinch.fill")
@@ -142,6 +147,7 @@ final class AppModel {
         isActive = false
         perform(gestures.reset(), time: CACurrentMediaTime())
         input.releaseAll()
+        glide.stop()
         scroller.stop()
         stopCamera(for: .touchMode)
         if tapMeasurement == nil { listener.stop() }
@@ -176,23 +182,31 @@ final class AppModel {
 
     // MARK: - Settings
 
+    /// The pinch thresholds in use (trained, or from the sensitivity slider).
+    var pinchThresholds: PinchThresholds { gestures.pinchThresholds }
+
     /// Pushes changed settings into the running pipeline.
     func applySettings() {
         let filter = settings.filter
         pointer.setSmoothing(minCutoff: filter.minCutoff, beta: filter.beta)
-        if pointer.mapping != settings.mapping {
+        if pointer.mapping != settings.mapping || pointer.mode != settings.pointerMode {
             pointer.mapping = settings.mapping
+            pointer.mode = settings.pointerMode
             pointer.reset()
         }
+        pointer.acceleration = settings.acceleration
         gestures.settings = settings.gestures
+        pointer.pinchThresholds = gestures.pinchThresholds
         overlay.showsCursor = settings.showCursor
         if tapMeasurement == nil {
             listener.update(parameters: settings.detectorParameters)
         }
     }
 
+    /// Saves a calibration and switches to touchscreen mode, which is what it's for.
     func applyCalibration(_ profile: CalibrationProfile) {
         settings.calibration = profile
+        settings.pointerMode = .touchscreen
         applySettings()
         debug.log(.info, "Calibrated: \(profile.quality.rawValue.lowercased()), off by about \(Int(profile.rmsError * 100 * 10) / 10)% of the screen width.")
     }
@@ -289,8 +303,18 @@ final class AppModel {
     private func handle(_ frame: HandFrame) {
         guard isCameraRunning else { return }
         debug.record(frame)
+
+        // Trackpad mode starts from wherever the real pointer is: when a hand comes (back)
+        // into view, and after the user moves the pointer with the real trackpad.
+        if settings.pointerMode == .trackpad,
+           pointer.latest.map({ frame.time - $0.time > pointer.restartAfter }) ?? true
+            || activity.pointerUsed(within: 0.25) {
+            pointer.setCursor(Self.normalizedPointerLocation())
+        }
+
         let update = pointer.ingest(frame)
         debug.latestUpdate = update
+        frameObserver?(frame, update)
 
         if calibration.isRunning {
             calibration.handle(frame: frame, update: update)
@@ -305,6 +329,13 @@ final class AppModel {
         debug.gestureState = result.feedback.map { "\($0.state)" } ?? "no hand"
 
         if let feedback = result.feedback {
+            // Hold the cursor still while a click or scroll is in progress, so it lands
+            // where it started; the hand's movement still drives the scroll.
+            switch feedback.state {
+            case .pressed, .scrolling: pointer.pin(at: feedback.position)
+            case .zooming: pointer.pin(at: pointer.cursorPosition)
+            case .hover, .paused, .dragging: pointer.unpin()
+            }
             overlay.updateCursor(feedback, stale: false)
             steerPointer(feedback)
         } else if let last = pointer.latest, frame.time - last.time <= Self.tapMaxAge {
@@ -314,19 +345,31 @@ final class AppModel {
         }
     }
 
-    /// Moves the real pointer with the hand, so hover effects work and the arrow shows where
-    /// a click will land. During a scroll it stays put, over whatever is scrolling.
+    /// Moves the real pointer with the hand, gliding at display rate. In trackpad mode the
+    /// pointer *is* the cursor; in touchscreen mode it's optional (hover effects). During a
+    /// scroll or zoom it stays put, over whatever is scrolling.
     private func steerPointer(_ feedback: CursorFeedback) {
-        guard settings.movePointer,
+        let follows = settings.pointerMode == .trackpad || settings.movePointer || feedback.state == .dragging
+        guard follows,
               !activity.pointerUsed(within: Self.pointerPauseAfterRealInput),
               let screen = NSScreen.builtIn
         else { return }
         switch feedback.state {
-        case .hover, .pressed:
-            input.movePointer(to: screen.quartzPoint(fromNormalized: feedback.position))
-        case .dragging, .scrolling, .zooming:
+        case .hover, .paused, .pressed, .dragging:
+            glide.aim(at: screen.quartzPoint(fromNormalized: feedback.position))
+        case .scrolling, .zooming:
             break
         }
+    }
+
+    /// The real pointer's position on the built-in display, normalized (origin bottom-left).
+    private static func normalizedPointerLocation() -> CGPoint {
+        guard let frame = NSScreen.builtIn?.frame else { return CGPoint(x: 0.5, y: 0.5) }
+        let location = NSEvent.mouseLocation
+        return CGPoint(
+            x: ((location.x - frame.minX) / frame.width).clamped(to: 0...1),
+            y: ((location.y - frame.minY) / frame.height).clamped(to: 0...1)
+        )
     }
 
     private func perform(_ actions: [GestureAction], time: Double) {
@@ -340,6 +383,7 @@ final class AppModel {
                 let point = quartz(p)
                 let count = clickCount(at: time, point: point)
                 input.click(at: point, count: count)
+                glide.jump(to: point)
                 overlay.pulse(at: p, style: .primary)
                 let kind = count == 2 ? "Double-click" : count == 3 ? "Triple-click" : "Click"
                 debug.log(.click, "\(kind) at \(Int(point.x)), \(Int(point.y)).")
@@ -349,10 +393,14 @@ final class AppModel {
                 debug.log(.click, "Right-click at \(Int(quartz(p).x)), \(Int(quartz(p).y)).")
             case .dragBegan(let p):
                 input.mouseDown(at: quartz(p))
+                glide.jump(to: quartz(p))
                 debug.log(.click, "Drag started.")
-            case .dragMoved(let p):
-                input.drag(to: quartz(p))
+            case .dragMoved:
+                // The glide carries the drag at display rate (see steerPointer); with the
+                // button down, its moves are posted as drags.
+                break
             case .dragEnded(let p):
+                glide.stop()
                 input.mouseUp(at: quartz(p))
                 debug.log(.click, "Drag ended.")
             case .scroll(let v):

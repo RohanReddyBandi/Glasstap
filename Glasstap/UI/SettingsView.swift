@@ -45,13 +45,45 @@ private struct GeneralTab: View {
 
     var body: some View {
         Form {
-            Section("Touch mode") {
-                LabeledContent("Turn on and off") { ShortcutRecorder(model: model) }
-                Toggle("Show the cursor ring", isOn: model.binding(\.showCursor))
-                Toggle(isOn: model.binding(\.movePointer)) {
-                    Text("Move the pointer with my hand")
-                    Text("Buttons light up as you point at them. The trackpad still works: touch it and your hand lets go of the pointer for a second.")
+            Section("Pointing") {
+                Picker("Pointing style", selection: model.binding(\.pointerMode)) {
+                    Text("Trackpad").tag(PointerMode.trackpad)
+                    Text("Touchscreen").tag(PointerMode.touchscreen)
                 }
+                .pickerStyle(.segmented)
+                Text(model.settings.pointerMode == .trackpad
+                     ? "Move your hand and the pointer moves with it, like an air trackpad. Slow for precision, quick to cross the screen. Open your hand to reposition. No calibration needed."
+                     : "The pointer goes wherever your hand is in front of the screen. Needs calibration, and big arm movements.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if model.settings.pointerMode == .trackpad {
+                    LabeledContent("Pointer speed") {
+                        HStack {
+                            Text("Slow").font(.caption).foregroundStyle(.secondary)
+                            Slider(value: model.binding(\.pointerSpeed), in: 0.4...2.5)
+                            Text("Fast").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle(isOn: model.binding(\.pointerAcceleration)) {
+                        Text("Acceleration")
+                        Text("Quick movements go further than slow ones, like a real trackpad.")
+                    }
+                } else {
+                    if let profile = model.settings.calibration {
+                        CalibrationStatus(profile: profile)
+                    } else {
+                        Label("Not calibrated yet. The pointer will be rough until you are.", systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.orange)
+                    }
+                    Button(model.settings.calibration == nil ? "Calibrate…" : "Recalibrate…") { model.calibration.begin() }
+                    Toggle(isOn: model.binding(\.movePointer)) {
+                        Text("Move the pointer with my hand")
+                        Text("Buttons light up as you point at them. Touch the trackpad and your hand lets go of the pointer for a second.")
+                    }
+                }
+
                 LabeledContent("Smoothing") {
                     HStack {
                         Text("Quick").font(.caption).foregroundStyle(.secondary)
@@ -59,22 +91,12 @@ private struct GeneralTab: View {
                         Text("Steady").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Toggle("Show the ring around the pointer", isOn: model.binding(\.showCursor))
             }
 
-            Section("Calibration") {
-                if let profile = model.settings.calibration {
-                    CalibrationStatus(profile: profile)
-                } else {
-                    Label("Not calibrated yet. The cursor will be rough until you are.", systemImage: "exclamationmark.circle")
-                        .foregroundStyle(.orange)
-                }
-                HStack {
-                    Button(model.settings.calibration == nil ? "Calibrate…" : "Recalibrate…") { model.calibration.begin() }
-                    Button("Run Setup Assistant…") { model.windows.showSetup() }
-                }
-                Text("Recalibrate if you change how you sit or move the lid.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Touch mode") {
+                LabeledContent("Turn on and off") { ShortcutRecorder(model: model) }
+                Button("Run Setup Assistant…") { model.windows.showSetup() }
             }
 
             Section("App") {
@@ -114,18 +136,35 @@ private struct GesturesTab: View {
     var body: some View {
         Form {
             Section("Gestures") {
-                ForEach(GestureGuide.items) { item in
-                    Toggle(isOn: model.gestureBinding(item.setting)) { GestureRow(item: item) }
+                ForEach(GestureGuide.items.filter { $0.setting != nil }) { item in
+                    if let setting = item.setting {
+                        Toggle(isOn: model.gestureBinding(setting)) { GestureRow(item: item) }
+                    }
+                }
+            }
+            Section("Pinch") {
+                if model.settings.gestures.pinchProfile != nil {
+                    Label("Tuned to your pinch", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    HStack {
+                        Button("Retrain…") { model.windows.showSetup(step: .practice) }
+                        Button("Use the Slider Instead") {
+                            model.settings.gestures.pinchProfile = nil
+                            model.applySettings()
+                        }
+                    }
+                } else {
+                    LabeledContent("Pinch sensitivity") {
+                        HStack {
+                            Text("Fingers touching").font(.caption).foregroundStyle(.secondary)
+                            Slider(value: model.gestureBinding(\.pinchSensitivity), in: 0...1)
+                            Text("Fingers close").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Button("Tune to My Pinch…") { model.windows.showSetup(step: .practice) }
                 }
             }
             Section("Feel") {
-                LabeledContent("Pinch sensitivity") {
-                    HStack {
-                        Text("Fingers touching").font(.caption).foregroundStyle(.secondary)
-                        Slider(value: model.gestureBinding(\.pinchSensitivity), in: 0...1)
-                        Text("Fingers close").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
                 LabeledContent("Scroll speed") {
                     HStack {
                         Slider(value: model.gestureBinding(\.scrollSpeed), in: 0.5...3)

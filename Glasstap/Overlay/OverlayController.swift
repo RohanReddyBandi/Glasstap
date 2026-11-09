@@ -145,6 +145,12 @@ final class OverlayView: NSView {
         switch feedback.state {
         case .hover:
             break
+        case .paused:
+            // Open hand: the cursor holds still. A faint, hollow ring says "not steering".
+            size = CGSize(width: 30, height: 30)
+            fill = .clear
+            stroke = NSColor.white.withAlphaComponent(0.5)
+            showCenter = false
         case .pressed:
             size = CGSize(width: 16, height: 16)
             fill = accent.withAlphaComponent(0.9)

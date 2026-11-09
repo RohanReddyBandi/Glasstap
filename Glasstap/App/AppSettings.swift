@@ -15,12 +15,23 @@ final class AppSettings {
     var toggleHotKey: KeyCombo {
         didSet { save(toggleHotKey, Key.hotKey) }
     }
+    /// Trackpad (relative, the default) or touchscreen (absolute, calibrated) pointing.
+    var pointerMode: PointerMode {
+        didSet { defaults.set(pointerMode.rawValue, forKey: Key.pointerMode) }
+    }
+    /// Trackpad mode's speed multiplier.
+    var pointerSpeed: Double {
+        didSet { defaults.set(pointerSpeed, forKey: Key.pointerSpeed) }
+    }
+    var pointerAcceleration: Bool {
+        didSet { defaults.set(pointerAcceleration, forKey: Key.pointerAcceleration) }
+    }
     /// The translucent ring that follows your hand.
     var showCursor: Bool {
         didSet { defaults.set(showCursor, forKey: Key.showCursor) }
     }
-    /// Move the real mouse pointer with your hand, so buttons light up on hover and clicks
-    /// land under the arrow.
+    /// Touchscreen mode: also move the real mouse pointer with your hand, so buttons light
+    /// up on hover. (Trackpad mode always moves it; the pointer is the cursor.)
     var movePointer: Bool {
         didSet { defaults.set(movePointer, forKey: Key.movePointer) }
     }
@@ -74,6 +85,9 @@ final class AppSettings {
         self.defaults = defaults
         let detector = TapDetector.Parameters()
         hasCompletedSetup = defaults.bool(forKey: Key.setupDone)
+        pointerMode = defaults.string(forKey: Key.pointerMode).flatMap(PointerMode.init(rawValue:)) ?? .trackpad
+        pointerSpeed = defaults.object(forKey: Key.pointerSpeed) as? Double ?? 1.0
+        pointerAcceleration = defaults.object(forKey: Key.pointerAcceleration) as? Bool ?? true
         toggleHotKey = Self.load(KeyCombo.self, Key.hotKey, from: defaults) ?? .defaultToggle
         showCursor = defaults.object(forKey: Key.showCursor) as? Bool ?? true
         movePointer = defaults.object(forKey: Key.movePointer) as? Bool ?? true
@@ -107,6 +121,10 @@ final class AppSettings {
         calibration.map { .calibrated($0.homography) } ?? .uncalibrated
     }
 
+    var acceleration: PointerAcceleration {
+        PointerAcceleration(speed: pointerSpeed, enabled: pointerAcceleration)
+    }
+
     func resetTapTuning() {
         let detector = TapDetector.Parameters()
         tapThresholdDB = detector.minPeakDB
@@ -133,7 +151,11 @@ final class AppSettings {
     }
 
     private enum Key {
-        static let setupDone = "hasCompletedSetup"
+        // v2: the setup assistant gained a practice step that trains the pinch.
+        static let setupDone = "hasCompletedSetup.v2"
+        static let pointerMode = "pointerMode"
+        static let pointerSpeed = "pointerSpeed"
+        static let pointerAcceleration = "pointerAcceleration"
         static let hotKey = "toggleHotKey"
         static let showCursor = "showCursor"
         static let movePointer = "movePointer"
@@ -142,7 +164,9 @@ final class AppSettings {
         static let lastUpdateCheck = "lastUpdateCheck"
         static let gestures = "gestures"
         static let reverseScroll = "reverseScroll"
-        static let calibration = "calibration"
+        // v2: the cursor anchor moved from the knuckle midpoint to the palm center, so older
+        // calibrations no longer line up.
+        static let calibration = "calibration.v2"
         static let tapToClick = "tapToClick"
         static let tapThreshold = "tapThresholdDB.v2"
         static let tapRise = "tapRiseDB"

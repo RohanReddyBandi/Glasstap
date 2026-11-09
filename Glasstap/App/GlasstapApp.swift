@@ -45,14 +45,14 @@ struct MenuBarMenu: View {
             model.toggle()
         }
         Text("Shortcut: \(model.settings.toggleHotKey.displayString)")
-        if model.settings.calibration == nil {
-            Text("Not calibrated yet")
-        }
+        Text(model.settings.pointerMode == .trackpad ? "Pointing: Trackpad" : "Pointing: Touchscreen")
 
         Divider()
 
-        Button(model.settings.calibration == nil ? "Calibrate…" : "Recalibrate…") {
-            model.calibration.begin()
+        if model.settings.pointerMode == .touchscreen {
+            Button(model.settings.calibration == nil ? "Calibrate…" : "Recalibrate…") {
+                model.calibration.begin()
+            }
         }
         Button("Settings…") { model.windows.showSettings() }
             .keyboardShortcut(",")

@@ -8,8 +8,11 @@ struct GestureSettings: Codable, Equatable, Sendable {
     var rightClick = true
     var zoom = true
     var swipe = true
-    /// 0...1. Higher registers a pinch with the fingers further apart.
+    /// 0...1. Higher registers a pinch with the fingers further apart. Ignored when
+    /// `pinchProfile` is set.
     var pinchSensitivity: Double = 0.5
+    /// Thresholds learned from the user's own practice pinches.
+    var pinchProfile: PinchThresholds?
     /// Scroll distance per unit of hand movement. 1 = content follows the hand one-to-one.
     var scrollSpeed: Double = 1.0
 }
@@ -37,7 +40,8 @@ enum GestureAction: Equatable, Sendable {
 /// What the cursor ring should show.
 struct CursorFeedback: Equatable, Sendable {
     enum State: Equatable, Sendable {
-        case hover, pressed, dragging, scrolling, zooming
+        /// `paused`: an open hand, so the cursor holds still (the swipe pose).
+        case hover, paused, pressed, dragging, scrolling, zooming
     }
 
     var position: CGPoint
@@ -65,7 +69,10 @@ struct HandInput: Sendable {
 /// | Pinch, hold still, then move | Drag |
 /// | Pinch thumb and middle finger | Right-click |
 /// | Pinch with both hands, spread or squeeze | Zoom in or out |
-/// | Open hand, quick swipe | Switch Space (left/right), Mission Control (up), App Exposé (down) |
+/// | Open hand, quick flick | Switch Space (left/right), Mission Control (up), App Exposé (down) |
+///
+/// Swipes and zoom are measured in the camera image in palm lengths, so they work the same in
+/// trackpad and touchscreen mode and at any distance from the camera.
 struct GestureEngine {
     var settings: GestureSettings {
         didSet { applyThresholds() }
@@ -78,10 +85,12 @@ struct GestureEngine {
     var holdDuration: Double = 0.45
     /// Pinches held longer than this without moving don't click on release.
     var maxClickDuration: Double = 1.5
-    /// A swipe has to cover `swipeDistance` of the screen within this many seconds.
+    /// A swipe has to cover `swipeDistance` palm lengths within this many seconds.
     var swipeWindow: Double = 0.3
-    var swipeDistance: CGFloat = 0.3
-    var swipeCooldown: Double = 1.0
+    var swipeDistance: CGFloat = 0.9
+    var swipeCooldown: Double = 0.9
+    /// Ignore swipes this soon after a hand appears: raising a hand into view isn't a swipe.
+    var swipeGrace: Double = 0.35
     /// Spreading or squeezing the hands by this factor zooms one step.
     var zoomStep: CGFloat = 1.25
     /// After the hand has been gone this long, whatever it was doing ends.
@@ -95,11 +104,15 @@ struct GestureEngine {
     private var waitingForRelease = false
     private var lastSwipe = -Double.infinity
     private var lastSeen: Double?
+    private var handSince: Double?
 
     private struct Sample {
         var time: Double
         var cursor: CGPoint
         var motion: CGPoint
+        /// Palm center in mirror space (frame heights).
+        var camera: CGPoint
+        var scale: CGFloat
         var openPalm: Bool
     }
 
@@ -145,6 +158,7 @@ struct GestureEngine {
         history.removeAll()
         waitingForRelease = false
         lastSeen = nil
+        handSince = nil
         return actions
     }
 
@@ -159,10 +173,14 @@ struct GestureEngine {
             }
             return (actions, nil)
         }
+        if handSince == nil || time - (lastSeen ?? time) > lostAfter { handSince = time }
         lastSeen = time
 
         var actions: [GestureAction] = []
-        history.append(Sample(time: time, cursor: primary.cursor, motion: primary.motion, openPalm: primary.metrics.isOpenPalm))
+        history.append(Sample(
+            time: time, cursor: primary.cursor, motion: primary.motion,
+            camera: primary.metrics.mirrored, scale: primary.metrics.scale, openPalm: primary.metrics.isOpenPalm
+        ))
         history.removeAll { time - $0.time > 0.6 }
 
         let indexEvent = indexPinch.update(ratio: primary.metrics.indexPinch, time: time)
@@ -178,7 +196,7 @@ struct GestureEngine {
 
         // Both hands pinched: zoom takes over from a click or scroll in progress.
         if settings.zoom, let secondary, indexPinch.isPinched, otherPinch.isPinched {
-            let baseline = distance(primary.motion, secondary.motion)
+            let baseline = handSpread(primary, secondary)
             switch phase {
             case .idle:
                 phase = .zoom(baseline: baseline)
@@ -193,7 +211,7 @@ struct GestureEngine {
         switch phase {
         case .zoom(var baseline):
             if let secondary, indexPinch.isPinched, otherPinch.isPinched {
-                let spread = distance(primary.motion, secondary.motion)
+                let spread = handSpread(primary, secondary)
                 if spread > baseline * zoomStep {
                     actions.append(.zoom(1))
                     baseline = spread
@@ -306,17 +324,21 @@ struct GestureEngine {
 
     private mutating func detectSwipe(at time: Double) -> SwipeDirection? {
         guard time - lastSwipe >= swipeCooldown, !indexPinch.isPinched, !middlePinch.isPinched else { return nil }
+        guard let since = handSince, time - since >= swipeGrace else { return nil }
         let recent = history.filter { time - $0.time <= swipeWindow }
+        // Start with an open hand (Gstrl's rule); fingers often fold a little mid-flick.
         guard recent.count >= 4, let first = recent.first, let last = recent.last,
-              last.time - first.time >= 0.12, recent.allSatisfy(\.openPalm)
+              last.time - first.time >= 0.1, first.openPalm,
+              recent.filter(\.openPalm).count * 2 >= recent.count
         else { return nil }
 
-        let dx = (last.motion.x - first.motion.x) * screenSize.width
-        let dy = (last.motion.y - first.motion.y) * screenSize.height
+        let palm = recent.map(\.scale).reduce(0, +) / CGFloat(recent.count)
+        let dx = (last.camera.x - first.camera.x) / palm
+        let dy = (last.camera.y - first.camera.y) / palm
         var direction: SwipeDirection?
-        if abs(dx) >= swipeDistance * screenSize.width, abs(dx) >= 2 * abs(dy) {
+        if abs(dx) >= swipeDistance, abs(dx) >= 2 * abs(dy) {
             direction = dx > 0 ? .right : .left
-        } else if abs(dy) >= swipeDistance * screenSize.height, abs(dy) >= 2 * abs(dx) {
+        } else if abs(dy) >= swipeDistance, abs(dy) >= 2 * abs(dx) {
             direction = dy > 0 ? .up : .down
         }
         if direction != nil {
@@ -335,7 +357,7 @@ struct GestureEngine {
         )
         switch phase {
         case .idle:
-            break
+            if hand.metrics.isOpenPalm { feedback.state = .paused }
         case .zoom:
             feedback.state = .zooming
         case .press(let press):
@@ -357,11 +379,21 @@ struct GestureEngine {
         history.last { $0.time <= time }
     }
 
+    /// The pinch thresholds in use: the user's trained ones, or the sensitivity setting's.
+    var pinchThresholds: PinchThresholds {
+        settings.pinchProfile ?? PinchThresholds(sensitivity: settings.pinchSensitivity)
+    }
+
     private mutating func applyThresholds() {
-        let thresholds = PinchThresholds(sensitivity: settings.pinchSensitivity)
+        let thresholds = pinchThresholds
         indexPinch.thresholds = thresholds
         middlePinch.thresholds = thresholds
         otherPinch.thresholds = thresholds
+    }
+
+    /// Distance between the two palms, in palm lengths.
+    private func handSpread(_ a: HandInput, _ b: HandInput) -> CGFloat {
+        a.metrics.mirrored.distance(to: b.metrics.mirrored) / ((a.metrics.scale + b.metrics.scale) / 2)
     }
 
     private func points(_ p: CGPoint) -> CGPoint {

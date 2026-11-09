@@ -18,9 +18,9 @@ final class HandTracker: NSObject {
         }
     }
 
-    /// Frames are downscaled to this width before hand detection. Vision runs its own crops
-    /// internally, so going bigger mostly costs CPU without helping much.
-    static let processingWidth = 1024
+    /// Frames are downscaled to this width. Detection then runs on a crop around the hand
+    /// (see `HandRegionTracker`), so the extra pixels go to the hand itself.
+    static let processingWidth = 1280
 
     let session = AVCaptureSession()
     /// Called on the main queue for every processed frame, with or without hands.
@@ -34,6 +34,8 @@ final class HandTracker: NSObject {
     private let sessionQueue = DispatchQueue(label: "app.glasstap.camera.session")
     private let videoQueue = DispatchQueue(label: "app.glasstap.camera.frames", qos: .userInteractive)
     private var isConfigured = false
+    /// Only touched on `videoQueue`.
+    private var regions = HandRegionTracker(aspectRatio: 4.0 / 3.0)
     private let request: VNDetectHumanHandPoseRequest = {
         let request = VNDetectHumanHandPoseRequest()
         request.maximumHandCount = 2
@@ -54,6 +56,7 @@ final class HandTracker: NSObject {
         sessionQueue.async { [session] in
             if session.isRunning { session.stopRunning() }
         }
+        videoQueue.async { [weak self] in self?.regions.reset() }
     }
 
     private func configure() throws {
@@ -87,6 +90,7 @@ final class HandTracker: NSObject {
         let width = min(Self.processingWidth, Int(dimensions.width))
         let height = Int((Double(width) * Double(dimensions.height) / Double(dimensions.width) / 2).rounded()) * 2
         aspectRatio = CGFloat(width) / CGFloat(height)
+        regions = HandRegionTracker(aspectRatio: aspectRatio)
 
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
@@ -136,11 +140,14 @@ extension HandTracker: AVCaptureVideoDataOutputSampleBufferDelegate {
         let captureTime = Self.hostSeconds(of: sampleBuffer)
         let started = CACurrentMediaTime()
 
+        let region = regions.nextRegion()
+        request.regionOfInterest = region ?? CGRect(x: 0, y: 0, width: 1, height: 1)
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up)
-        var hands: [HandPose] = []
+        var detected: [HandPose] = []
         if (try? handler.perform([request])) != nil {
-            hands = (request.results ?? []).compactMap { HandPose(observation: $0) }
+            detected = (request.results ?? []).compactMap { HandPose(observation: $0) }
         }
+        let hands = regions.process(detected, detectedIn: region)
 
         let frame = HandFrame(
             time: captureTime,

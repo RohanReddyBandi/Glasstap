@@ -7,12 +7,16 @@ enum GestureGuide {
         let symbol: String
         let title: String
         let detail: String
-        let setting: WritableKeyPath<GestureSettings, Bool>
+        /// The setting that turns it on and off, if it can be.
+        let setting: WritableKeyPath<GestureSettings, Bool>?
     }
 
     static let items: [Item] = [
+        Item(id: "move", symbol: "hand.point.up.left", title: "Move your hand to move the pointer",
+             detail: "Like a trackpad in the air: move slowly for precision, quickly to cross the screen.",
+             setting: nil),
         Item(id: "click", symbol: "hand.pinch", title: "Pinch to click",
-             detail: "Touch your thumb and index finger together, then let go. Pinch twice for a double-click.",
+             detail: "Tap your thumb and index finger together. Pinch twice for a double-click.",
              setting: \.click),
         Item(id: "scroll", symbol: "arrow.up.and.down", title: "Pinch and move to scroll",
              detail: "Pinch, move your hand, let go. The page follows your hand, and keeps gliding if you flick.",
@@ -26,8 +30,8 @@ enum GestureGuide {
         Item(id: "zoom", symbol: "arrow.up.left.and.arrow.down.right", title: "Two-hand pinch to zoom",
              detail: "Pinch with both hands, then pull them apart to zoom in or together to zoom out.",
              setting: \.zoom),
-        Item(id: "swipe", symbol: "hand.raised", title: "Open-hand swipe",
-             detail: "Swipe an open hand left or right to switch Spaces, up for Mission Control, down for the app's windows.",
+        Item(id: "swipe", symbol: "hand.raised", title: "Open hand to pause and swipe",
+             detail: "Spread your fingers and the pointer holds still, so you can reposition. Flick an open hand left or right to switch Spaces, up for Mission Control, down for the app's windows.",
              setting: \.swipe),
     ]
 }

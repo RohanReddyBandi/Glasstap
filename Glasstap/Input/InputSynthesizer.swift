@@ -20,7 +20,7 @@ final class InputSynthesizer {
     // MARK: Mouse
 
     func movePointer(to point: CGPoint) {
-        if let last = lastPointer, abs(last.x - point.x) < 0.5, abs(last.y - point.y) < 0.5 { return }
+        if let last = lastPointer, abs(last.x - point.x) < 0.25, abs(last.y - point.y) < 0.25 { return }
         postMouse(isMouseDown ? .leftMouseDragged : .mouseMoved, at: point, button: .left)
     }
 
@@ -201,6 +201,99 @@ final class ScrollAnimator {
 
         if abs(pending.dx) < 0.5, abs(pending.dy) < 0.5, velocity == .zero {
             stop()
+        }
+    }
+}
+
+/// Moves the real pointer at display rate instead of camera rate.
+///
+/// The camera reports the hand 30 times a second; jumping the pointer on each report looks
+/// steppy on a 120 Hz screen and feels laggy. Between reports this keeps the pointer moving
+/// along the hand's current velocity (dead reckoning), then eases onto each new report.
+final class PointerGlide {
+    /// Posts a pointer move (or drag) to a Quartz global point.
+    var post: (CGPoint) -> Void = { _ in }
+
+    private var target: CGPoint?
+    private var current: CGPoint?
+    private var velocity = CGVector.zero
+    private var lastTargetTime: Double = 0
+    private var lastTick: Double = 0
+    private var timer: Timer?
+
+    /// Extrapolate at most this far past the last report, so a stalled camera can't send the
+    /// pointer drifting.
+    private static let maxLead: Double = 0.045
+    private static let maxLeadDistance: CGFloat = 60
+    /// Time constant for easing onto the predicted position.
+    private static let easing: Double = 0.012
+
+    /// A new reported position, in Quartz global coordinates.
+    func aim(at point: CGPoint) {
+        let now = CACurrentMediaTime()
+        if let target, now - lastTargetTime < 0.15 {
+            let dt = max(now - lastTargetTime, 1.0 / 120.0)
+            let instant = CGVector(dx: (point.x - target.x) / dt, dy: (point.y - target.y) / dt)
+            velocity = CGVector(dx: velocity.dx * 0.4 + instant.dx * 0.6, dy: velocity.dy * 0.4 + instant.dy * 0.6)
+        } else {
+            velocity = .zero
+        }
+        if current == nil { current = point }
+        target = point
+        lastTargetTime = now
+        start()
+    }
+
+    /// Puts the pointer somewhere directly (after a click), without gliding there.
+    func jump(to point: CGPoint) {
+        current = point
+        target = point
+        velocity = .zero
+        lastTargetTime = CACurrentMediaTime()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        target = nil
+        current = nil
+        velocity = .zero
+    }
+
+    private func start() {
+        guard timer == nil else { return }
+        lastTick = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func tick() {
+        guard let target, let position = current else { return }
+        let now = CACurrentMediaTime()
+        let dt = min(now - lastTick, 0.05)
+        lastTick = now
+
+        let age = now - lastTargetTime
+        let lead = min(age, Self.maxLead)
+        var ahead = CGVector(dx: velocity.dx * lead, dy: velocity.dy * lead)
+        let length = hypot(ahead.dx, ahead.dy)
+        if length > Self.maxLeadDistance {
+            ahead = CGVector(dx: ahead.dx / length * Self.maxLeadDistance, dy: ahead.dy / length * Self.maxLeadDistance)
+        }
+        let predicted = CGPoint(x: target.x + ahead.dx, y: target.y + ahead.dy)
+        let blend = CGFloat(1 - exp(-dt / Self.easing))
+        let next = CGPoint(x: position.x + (predicted.x - position.x) * blend, y: position.y + (predicted.y - position.y) * blend)
+
+        if hypot(next.x - position.x, next.y - position.y) >= 0.3 {
+            post(next)
+        }
+        current = next
+
+        // Idle: no new reports for a while and the pointer has arrived.
+        if age > 0.3, hypot(next.x - target.x, next.y - target.y) < 0.5 {
+            timer?.invalidate()
+            timer = nil
         }
     }
 }

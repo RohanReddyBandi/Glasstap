@@ -1,10 +1,11 @@
 import Combine
 import SwiftUI
 
-/// The setup assistant: what Glasstap does, permissions, a camera check, calibration, done.
+/// The setup assistant: what Glasstap does, permissions, a hands-on practice that also trains
+/// the pinch, done.
 struct SetupView: View {
     enum Step: Int, CaseIterable {
-        case welcome, permissions, camera, calibrate, done
+        case welcome, permissions, practice, done
     }
 
     let model: AppModel
@@ -21,8 +22,7 @@ struct SetupView: View {
                 switch step {
                 case .welcome: WelcomeStep()
                 case .permissions: PermissionsStep(model: model)
-                case .camera: CameraStep(model: model)
-                case .calibrate: CalibrateStep(model: model)
+                case .practice: PracticeStep(model: model)
                 case .done: DoneStep(model: model)
                 }
             }
@@ -34,7 +34,7 @@ struct SetupView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 14)
         }
-        .frame(width: 660, height: 600)
+        .frame(width: 680, height: 620)
     }
 
     private var footer: some View {
@@ -55,13 +55,6 @@ struct SetupView: View {
                 Button("Continue") { move(1) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!model.permissions.allGranted(needsMicrophone: false))
-            case .calibrate:
-                if model.settings.calibration == nil {
-                    Button("Skip for Now") { move(1) }
-                }
-                Button("Continue") { move(1) }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(model.settings.calibration == nil)
             case .done:
                 Button("Close") { finish(turnOn: false) }
                 Button("Turn On Touch Mode") { finish(turnOn: true) }
@@ -114,13 +107,17 @@ private struct StepHeader: View {
 
 private struct WelcomeStep: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
             StepHeader(
                 symbol: "hand.pinch.fill",
                 title: "Welcome to Glasstap",
-                subtitle: "Control your Mac by pointing at the screen. The built-in camera follows your hand. No extra hardware needed."
+                subtitle: "Control your Mac with your hand in the air. The built-in camera does the tracking. No extra hardware."
             )
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 20, alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)], alignment: .leading, spacing: 18) {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 20, alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)],
+                alignment: .leading,
+                spacing: 14
+            ) {
                 ForEach(GestureGuide.items) { GestureRow(item: $0) }
             }
         }
@@ -142,13 +139,13 @@ private struct PermissionsStep: View {
             VStack(spacing: 0) {
                 PermissionRow(
                     symbol: "camera.fill", title: "Camera",
-                    detail: "Follows your hand so Glasstap knows where you're pointing.",
+                    detail: "Follows your hand.",
                     status: .init(permissions.camera)
                 ) { Task { await permissions.requestCamera() } }
                 Divider()
                 PermissionRow(
                     symbol: "accessibility", title: "Accessibility",
-                    detail: "Lets Glasstap click, scroll and switch Spaces for you. Turn on Glasstap in the list that opens.",
+                    detail: "Lets Glasstap move the pointer, click, scroll and switch Spaces. Turn on Glasstap in the list that opens.",
                     status: permissions.accessibility ? .granted : .needed
                 ) { permissions.requestAccessibility() }
                 Divider()
@@ -167,87 +164,131 @@ private struct PermissionsStep: View {
     }
 }
 
-private struct CameraStep: View {
+private struct PracticeStep: View {
     let model: AppModel
-    @State private var error: String?
+    @State private var session = PracticeSession()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             StepHeader(
-                symbol: "camera.viewfinder",
-                title: "Check the camera",
-                subtitle: "Raise a hand in front of the screen. When dots appear on your fingers, Glasstap can see you."
+                symbol: "hand.point.up.left.fill",
+                title: "Try it",
+                subtitle: "Sit about an arm's length from the screen and hold up your hand. Each item lights up when Glasstap sees it. The pinches also teach Glasstap what your pinch looks like."
             )
             HStack(alignment: .top, spacing: 20) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12).fill(.black)
-                    if model.isCameraRunning {
-                        CameraDebugView(session: model.tracker.session, frame: model.debug.latestFrame)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    } else if let error {
-                        Text(error).foregroundStyle(.secondary).padding()
+                VStack(spacing: 8) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12).fill(.black)
+                        if model.isCameraRunning {
+                            CameraDebugView(session: model.tracker.session, frame: model.debug.latestFrame)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        } else if let error = session.error {
+                            Text(error).foregroundStyle(.secondary).padding()
+                        }
                     }
+                    .aspectRatio(model.tracker.aspectRatio, contentMode: .fit)
+                    liveStatus
                 }
-                .aspectRatio(model.tracker.aspectRatio, contentMode: .fit)
-                .frame(width: 340)
+                .frame(width: 300)
 
                 VStack(alignment: .leading, spacing: 14) {
-                    Label(
-                        model.debug.handVisible ? "Found your hand" : "Looking for your hand…",
-                        systemImage: model.debug.handVisible ? "checkmark.circle.fill" : "hand.raised"
+                    PracticeRow(
+                        done: session.moved,
+                        title: "Move your hand around",
+                        detail: "Fingers relaxed. This is how you'll move the pointer."
                     )
-                    .font(.headline)
-                    .foregroundStyle(model.debug.handVisible ? .green : .primary)
-                    Tip(symbol: "ruler", text: "Sit about an arm's length from the screen.")
-                    Tip(symbol: "sun.max", text: "Light in front of you works best. A bright window behind you makes your hand hard to see.")
-                    Tip(symbol: "hand.raised", text: "Hold your palm toward the screen with your fingers relaxed.")
+                    PracticeRow(
+                        done: session.pinchTrained,
+                        title: "Pinch three times",
+                        detail: pinchDetail
+                    ) {
+                        HStack(spacing: 6) {
+                            ForEach(0..<PinchTrainer.pinchesNeeded, id: \.self) { index in
+                                Circle()
+                                    .fill(index < session.pinches ? Color.green : Color.secondary.opacity(0.3))
+                                    .frame(width: 10, height: 10)
+                            }
+                        }
+                        .animation(.spring(duration: 0.25), value: session.pinches)
+                    }
+                    PracticeRow(
+                        done: session.openHand,
+                        title: "Open your hand",
+                        detail: "Spread your fingers toward the screen. That pauses the pointer, and it's the pose for swipes."
+                    )
+                    if session.pinchResult == .tooSimilar {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Your pinches and your open hand looked alike to the camera. Try touching your fingertips together more clearly, with your palm facing the screen.")
+                                .font(.callout)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Try the Pinches Again") { session.retrainPinch() }
+                        }
+                    } else if session.pinchTrained {
+                        Button("Redo the Pinches") { session.retrainPinch() }
+                            .buttonStyle(.link)
+                    }
                 }
             }
         }
-        .onAppear(perform: start)
-        .onDisappear { model.stopCamera(for: .setup) }
+        .task { await session.start(model: model) }
+        .onDisappear { session.stop() }
     }
 
-    private func start() {
-        Task {
-            await model.permissions.requestMediaAccessIfNeeded(includingMicrophone: false)
-            guard model.permissions.camera == .granted else {
-                error = "Camera access is off. Go back and allow it."
-                return
+    private var pinchDetail: String {
+        if session.pinchTrained { return "Got it. Pinches are now tuned to your hand." }
+        return "Tap your thumb and index fingertip together, then open them again."
+    }
+
+    private var liveStatus: some View {
+        HStack(spacing: 6) {
+            if !session.handVisible {
+                Label("No hand in view", systemImage: "hand.raised.slash").foregroundStyle(.orange)
+            } else if session.isOpenPalm {
+                Label("Open hand: paused", systemImage: "hand.raised.fill").foregroundStyle(.secondary)
+            } else {
+                Label("Steering", systemImage: "hand.point.up.left.fill").foregroundStyle(.green)
             }
-            do {
-                try model.startCamera(for: .setup)
-            } catch {
-                self.error = error.localizedDescription
+            Spacer()
+            if let gap = session.pinchGap {
+                Text(String(format: "pinch gap %.2f", gap))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
         }
+        .font(.callout.weight(.medium))
     }
 }
 
-private struct CalibrateStep: View {
-    let model: AppModel
+private struct PracticeRow<Extra: View>: View {
+    let done: Bool
+    let title: String
+    let detail: String
+    @ViewBuilder var extra: () -> Extra
+
+    init(done: Bool, title: String, detail: String, @ViewBuilder extra: @escaping () -> Extra = { EmptyView() }) {
+        self.done = done
+        self.title = title
+        self.detail = detail
+        self.extra = extra
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            StepHeader(
-                symbol: "scope",
-                title: "Calibrate",
-                subtitle: "Teach Glasstap where your hand is when you point at each part of the screen. It takes about a minute: nine dots, one pinch each."
-            )
-            if let profile = model.settings.calibration {
-                CalibrationStatus(profile: profile)
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20))
+                .foregroundStyle(done ? .green : .secondary)
+                .contentTransition(.symbolEffect(.replace))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.headline)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                extra()
             }
-            HStack {
-                Button(model.settings.calibration == nil ? "Start Calibration" : "Calibrate Again") {
-                    model.calibration.begin()
-                }
-                .controlSize(.large)
-                .keyboardShortcut(model.settings.calibration == nil ? .defaultAction : nil)
-            }
-            Text("Calibration fills the screen. Press Esc to stop at any time.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
+        .animation(.easeInOut(duration: 0.2), value: done)
     }
 }
 
@@ -264,9 +305,10 @@ private struct DoneStep: View {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(GestureGuide.items.prefix(4)) { GestureRow(item: $0) }
             }
-            Text("Change gestures, sensitivity and the shortcut in Settings.")
+            Text("Prefer pointing straight at things, like a touchscreen? Switch the pointing style in Settings and calibrate. You can also change pointer speed, gestures and the shortcut there.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -288,20 +330,6 @@ struct CalibrationStatus: View {
             Image(systemName: profile.quality == .rough ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(profile.quality == .rough ? .orange : .green)
         }
-    }
-}
-
-private struct Tip: View {
-    let symbol: String
-    let text: String
-
-    var body: some View {
-        Label {
-            Text(text).fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(.secondary)
-        }
-        .font(.callout)
     }
 }
 

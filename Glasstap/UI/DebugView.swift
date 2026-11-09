@@ -61,9 +61,11 @@ struct DebugView: View {
             }
             HStack(spacing: 24) {
                 stat("Cursor", hand.map { String(format: "%.0f%% across, %.0f%% up", $0.sample.screen.x * 100, $0.sample.screen.y * 100) } ?? "–")
-                stat("Pinch gap", hand?.metrics.indexPinch.map { String(format: "%.2f", $0) } ?? "–")
-                stat("Fingers out", hand.map { "\($0.metrics.extendedFingers)" } ?? "–")
-                stat("Calibration", model.settings.calibration?.quality.rawValue ?? "None")
+                stat("Pinch gap", hand?.metrics.indexPinch.map {
+                    String(format: "%.2f (press < %.2f)", $0, model.pinchThresholds.down)
+                } ?? "–")
+                stat("Hand", hand.map { $0.metrics.isOpenPalm ? "open (paused)" : "steering, \($0.metrics.extendedFingers) fingers out" } ?? "–")
+                stat("Pointing", model.settings.pointerMode == .trackpad ? "Trackpad" : "Touchscreen")
             }
         }
     }
