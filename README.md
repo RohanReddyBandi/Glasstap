@@ -89,6 +89,10 @@ xcodebuild -project Glasstap.xcodeproj -scheme Glasstap test
 
 Sign development builds with the same certificate every time. macOS ties the Camera and Accessibility grants to the signature, so an ad-hoc build asks again after every rebuild.
 
+## Releasing
+
+`scripts/release.sh <version>` builds a Developer ID–signed, notarized and stapled DMG in `dist/`. Pushing a `v<version>` tag does the same on GitHub Actions and publishes the release. [docs/RELEASING.md](docs/RELEASING.md) covers the one-time certificate and secrets setup.
+
 ## How it works
 
 - **Hand tracking:** Vision's hand-pose model runs on 1024 px frames at the camera's full 30 fps. Center Stage is off, and the tallest 4:3 format is used, so the view stays fixed.
